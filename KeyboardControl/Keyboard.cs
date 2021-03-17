@@ -47,11 +47,18 @@ namespace KeyboardControl
             public KeyboardException(Code code) : base("Error code " + code) { }
         }
 
-        public struct HSVColor : IEquatable<HSVColor>
+        public struct HSVColor : IEquatable<HSVColor>, IToBytesable
         {
             public double h;
             public double s;
             public double v;
+
+            public HSVColor(double h, double s, double v)
+            {
+                this.h = h;
+                this.s = s;
+                this.v = v;
+            }
 
             public void FromBytes(byte[] hsv)
             {
@@ -71,10 +78,15 @@ namespace KeyboardControl
 
             public byte[] ToBytes()
             {
-                var hb = (byte)((h / 360.0) * 255.0);
-                var sb = (byte)(s * 255.0);
-                var vb = (byte)(v * 255.0);
-                return new byte[] { hb, sb, vb };
+                return ToBytes(new byte[3], 0);
+            }
+
+            public byte[] ToBytes(byte[] d, int offset)
+            {
+                d[offset] = (byte)((h / 360.0) * 255.0);
+                d[offset + 1] = (byte)(s * 255.0);
+                d[offset + 2] = (byte)(v * 255.0);
+                return d;
             }
 
             public override bool Equals(object obj)
@@ -94,6 +106,71 @@ namespace KeyboardControl
                 return string.Format("H = {0}; S = {1}; V = {2}", h, s, v);
             }
         }
+
+        public struct RGBColor : IEquatable<RGBColor>, IToBytesable
+        {
+            public byte r;
+            public byte g;
+            public byte b;
+
+            public RGBColor(byte r, byte g, byte b)
+            {
+                this.r = r;
+                this.g = g;
+                this.b = b;
+            }
+
+            public void FromBytes(byte[] rgb)
+            {
+                r = rgb[0];
+                g = rgb[1];
+                b = rgb[2];
+            }
+
+            public override int GetHashCode()
+            {
+                int hashCode = -839137856;
+                hashCode = hashCode * -1521134295 + r.GetHashCode();
+                hashCode = hashCode * -1521134295 + g.GetHashCode();
+                hashCode = hashCode * -1521134295 + b.GetHashCode();
+                return hashCode;
+            }
+
+            public override bool Equals(object obj)
+            {
+                return obj is RGBColor color && Equals(color);
+            }
+
+            public bool Equals(RGBColor other)
+            {
+                return r == other.r &&
+                       g == other.g &&
+                       b == other.b;
+            }
+
+            public byte[] ToBytes()
+            {
+                return ToBytes(new byte[3], 0);
+            }
+
+            public byte[] ToBytes(byte[] d, int offset)
+            {
+                d[offset] = r;
+                d[offset + 1] = g;
+                d[offset + 2] = b;
+                return d;
+            }
+
+            public override string ToString()
+            {
+                return string.Format("R = {0}; G = {1}; B = {2}", r, g, b);
+            }
+        }
+
+        private interface IToBytesable
+        {
+            byte[] ToBytes(byte[] d, int offset);
+        }
         #endregion
 
         #region Fields
@@ -112,9 +189,9 @@ namespace KeyboardControl
         private static readonly byte[] BYTE_EMPTY = new byte[0];
         private const byte REPORT_ID = 0;
 
-        private const int REPORT_LEN = 32;
-        private const int REPORT_LEN_WITH_ID = REPORT_LEN + 1;
-        private const int DATA_MAX_LEN = REPORT_LEN - 1;
+        private const byte REPORT_LEN = 32;
+        private const byte REPORT_LEN_WITH_ID = REPORT_LEN + 1;
+        private const byte DATA_MAX_LEN = REPORT_LEN - 1;
         #endregion
 
         public Keyboard(ushort vendorId = 0x4B42, ushort productId = 0x6061, ushort usagePage = 0xFF60, ushort usageId = 0x61)
@@ -157,12 +234,12 @@ namespace KeyboardControl
 
         public async Task SetRGBLightEnabled(bool enable)
         {
-            await this.SendCommand(Command.RGBLIGHT_ENABLE_SET, new byte[] { BoolToByte(enable) });
+            await SendCommand(Command.RGBLIGHT_ENABLE_SET, new byte[] { BoolToByte(enable) });
         }
 
         public async Task<bool> GetRGBLightEnabled()
         {
-            var res = await this.SendCommand(Command.RGBLIGHT_ENABLE_GET);
+            var res = await SendCommand(Command.RGBLIGHT_ENABLE_GET);
             return ByteToBool(res[0]);
         }
 
@@ -173,10 +250,94 @@ namespace KeyboardControl
 
         public async Task<HSVColor> GetRGBLightHSV()
         {
-            var res = await this.SendCommand(Command.RGBLIGHT_HSV_GET, new byte[] { });
+            var res = await SendCommand(Command.RGBLIGHT_HSV_GET, new byte[] { });
             HSVColor ret = new HSVColor();
             ret.FromBytes(res);
             return ret;
+        }
+
+        public async Task<bool> GetNKRO()
+        {
+            var res = await SendCommand(Command.NKRO_GET);
+            return ByteToBool(res[0]);
+        }
+
+        public async Task SetNKRO(bool enable)
+        {
+            await SendCommand(Command.NKRO_SET, new byte[] { BoolToByte(enable) });
+        }
+
+        public async Task SetRGBLightMulti(Dictionary<byte, RGBColor> colors)
+        {
+            await SetRGBLightMulti(colors, Command.RGBLIGHT_SET_MULTI_RGB);
+        }
+
+        public async Task SetRGBLightMulti(Dictionary<byte, HSVColor> colors)
+        {
+            await SetRGBLightMulti(colors, Command.RGBLIGHT_SET_MULTI_HSV);
+        }
+
+        private async Task SetRGBLightMulti<T>(Dictionary<byte, T> colors, Command cmd) where T : IToBytesable
+        {
+            byte maxCount = (DATA_MAX_LEN - 1) / 4;
+            byte[] sendData = new byte[(maxCount * 4) + 1];
+            sendData[0] = 0;
+
+            foreach (var kvp in colors)
+            {
+                int offset = ((sendData[0]++) * 4) + 1;
+
+                sendData[offset] = kvp.Key;
+                kvp.Value.ToBytes(sendData, offset + 1);
+
+                if (sendData[0] >= maxCount)
+                {
+                    await SendCommand(cmd, sendData);
+                    sendData[0] = 0;
+                }
+            }
+
+            if (sendData[0] > 0)
+            {
+                await SendCommand(cmd, sendData);
+            }
+        }
+
+        public async Task SetRGBLightOffset(RGBColor[] colors, byte offset)
+        {
+            await SetRGBLightOffset(colors, offset, Command.RGBLIGHT_SET_MULTI_RGB);
+        }
+
+        public async Task SetRGBLightOffset(HSVColor[] colors, byte offset)
+        {
+            await SetRGBLightOffset(colors, offset, Command.RGBLIGHT_SET_MULTI_HSV);
+        }
+
+        private async Task SetRGBLightOffset<T>(T[] colors, byte offset, Command cmd) where T : IToBytesable
+        {
+            byte maxCount = (DATA_MAX_LEN - 2) / 3;
+            byte[] sendData = new byte[(maxCount * 3) + 1];
+            sendData[0] = 0;
+            sendData[1] = offset;
+
+            foreach (var color in colors)
+            {
+                int aoffset = ((sendData[0]++) * 3) + 1;
+                
+                color.ToBytes(sendData, aoffset);
+
+                if (sendData[0] >= maxCount)
+                {
+                    await SendCommand(cmd, sendData);
+                    sendData[1] += sendData[0];
+                    sendData[0] = 0;
+                }
+            }
+
+            if (sendData[0] > 0)
+            {
+                await SendCommand(cmd, sendData);
+            }
         }
 
         #region Basic HID I/O
