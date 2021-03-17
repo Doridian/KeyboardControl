@@ -232,6 +232,18 @@ namespace KeyboardControl
             await SendCommand(Command.PING);
         }
 
+        public async Task<bool> GetNKRO()
+        {
+            var res = await SendCommand(Command.NKRO_GET);
+            return ByteToBool(res[0]);
+        }
+
+        public async Task SetNKRO(bool enable)
+        {
+            await SendCommand(Command.NKRO_SET, new byte[] { BoolToByte(enable) });
+        }
+
+        #region Basic RGB/HSV light configuration
         public async Task SetRGBLightEnabled(bool enable)
         {
             await SendCommand(Command.RGBLIGHT_ENABLE_SET, new byte[] { BoolToByte(enable) });
@@ -255,18 +267,9 @@ namespace KeyboardControl
             ret.FromBytes(res);
             return ret;
         }
+        #endregion
 
-        public async Task<bool> GetNKRO()
-        {
-            var res = await SendCommand(Command.NKRO_GET);
-            return ByteToBool(res[0]);
-        }
-
-        public async Task SetNKRO(bool enable)
-        {
-            await SendCommand(Command.NKRO_SET, new byte[] { BoolToByte(enable) });
-        }
-
+        #region Advanced RGB/HSV light configuration
         public async Task SetRGBLightMulti(Dictionary<byte, RGBColor> colors)
         {
             await SetRGBLightMulti(colors, Command.RGBLIGHT_SET_MULTI_RGB);
@@ -339,6 +342,7 @@ namespace KeyboardControl
                 await SendCommand(cmd, sendData);
             }
         }
+        #endregion
 
         #region Basic HID I/O
         private void InputReportReceived(HidDevice sender, HidInputReportReceivedEventArgs args)
