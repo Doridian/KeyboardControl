@@ -145,7 +145,6 @@ namespace KeyboardControl
             }
 
             device = await HidDevice.FromIdAsync(devices.First().Id, FileAccessMode.ReadWrite);
-
             if (device == null)
             {
                 throw new Exception("Could not open keyboard!");
