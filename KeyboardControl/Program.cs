@@ -1,7 +1,4 @@
 ﻿using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
 using System.Threading.Tasks;
 
 namespace KeyboardControl
@@ -13,7 +10,7 @@ namespace KeyboardControl
             Keyboard keyboard = new Keyboard();
             await keyboard.Initialize();
 
-
+            Console.Out.WriteLine(await keyboard.GetRGBLightHSV());
 
             Console.In.ReadLine();
         }
