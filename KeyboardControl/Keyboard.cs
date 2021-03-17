@@ -305,24 +305,24 @@ namespace KeyboardControl
 
         public async Task SetRGBLightOffset(RGBColor[] colors, byte offset)
         {
-            await SetRGBLightOffset(colors, offset, Command.RGBLIGHT_SET_MULTI_RGB);
+            await SetRGBLightOffset(colors, offset, Command.RGBLIGHT_SET_OFFSET_RGB);
         }
 
         public async Task SetRGBLightOffset(HSVColor[] colors, byte offset)
         {
-            await SetRGBLightOffset(colors, offset, Command.RGBLIGHT_SET_MULTI_HSV);
+            await SetRGBLightOffset(colors, offset, Command.RGBLIGHT_SET_OFFSET_HSV);
         }
 
         private async Task SetRGBLightOffset<T>(T[] colors, byte offset, Command cmd) where T : IToBytesable
         {
             byte maxCount = (DATA_MAX_LEN - 2) / 3;
-            byte[] sendData = new byte[(maxCount * 3) + 1];
+            byte[] sendData = new byte[(maxCount * 3) + 2];
             sendData[0] = 0;
             sendData[1] = offset;
 
             foreach (var color in colors)
             {
-                int aoffset = ((sendData[0]++) * 3) + 1;
+                int aoffset = ((sendData[0]++) * 3) + 2;
                 
                 color.ToBytes(sendData, aoffset);
 
