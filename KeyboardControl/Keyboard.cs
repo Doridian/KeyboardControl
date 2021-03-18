@@ -295,14 +295,14 @@ namespace KeyboardControl
 
                 if (sendData[0] >= maxCount)
                 {
-                    await SendCommand(cmd, sendData);
+                    await SendCommand(cmd, sendData, true);
                     sendData[0] = 0;
                 }
             }
 
             if (sendData[0] > 0)
             {
-                await SendCommand(cmd, sendData);
+                await SendCommand(cmd, sendData, true);
             }
         }
 
@@ -331,7 +331,7 @@ namespace KeyboardControl
 
                 if (sendData[0] >= maxCount)
                 {
-                    await SendCommand(cmd, sendData);
+                    await SendCommand(cmd, sendData, true);
                     sendData[1] += sendData[0];
                     sendData[0] = 0;
                 }
@@ -339,7 +339,7 @@ namespace KeyboardControl
 
             if (sendData[0] > 0)
             {
-                await SendCommand(cmd, sendData);
+                await SendCommand(cmd, sendData, true);
             }
         }
         #endregion
@@ -395,13 +395,13 @@ namespace KeyboardControl
             var report = device.CreateOutputReport(REPORT_ID);
             report.Data = sendData.AsBuffer();
 
-            Console.Out.WriteLine("[>] {0}", BitConverter.ToString(sendData));
-
             if (silent)
             {
                 await device.SendOutputReportAsync(report);
                 return BYTE_EMPTY;
             }
+
+            Console.Out.WriteLine("[>] {0}", BitConverter.ToString(sendData));
 
             var tcs = new TaskCompletionSource<byte[]>(TaskCreationOptions.RunContinuationsAsynchronously);
             try
