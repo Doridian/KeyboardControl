@@ -13,20 +13,18 @@ namespace KeyboardControl
         private readonly IWaveIn waveIn;
         private readonly Keyboard keyboard;
 
-        private static readonly int FFT_LENGTH = 513;
+        private static readonly int FFT_LENGTH = 1024;
         private static readonly int FFT_LENGTH_HALF = FFT_LENGTH / 2;
         private static readonly int FFT_M = (int)Math.Log(FFT_LENGTH, 2);
 
         private static readonly int MAX_BUCKET_WINDOW = 2;
 
-        private static readonly double SOUND_FLOOR = 30;
-        private static readonly double SOUND_CEILING = 10;
+        private static readonly double SOUND_FLOOR = 120;
+        private static readonly double SOUND_CEILING = 50;
         private static readonly double SOUND_DYNAMIC_RANGE = SOUND_FLOOR - SOUND_CEILING;
 
         private Complex[] fftBuffer = new Complex[FFT_LENGTH];
         private int fftPos = 0;
-
-        private readonly int bucketCount;
 
         private LinkedList<double[]> bucketPowers = new LinkedList<double[]>();
 
@@ -34,16 +32,14 @@ namespace KeyboardControl
         {
             this.waveIn = waveIn;
             this.keyboard = keyboard;
-            bucketCount = 16;
             waveIn.DataAvailable += WaveIn_DataAvailable;
         }
 
-        // TODO: Use bands: 25 38 59 91 140 215 331 510 784 1.2k 1.9k 2.9k 4.4k 6.8k 10.4k 16k
         private void WaveIn_DataAvailable(object sender, WaveInEventArgs e)
         {
             for (int i = 0; i < e.BytesRecorded; i += waveIn.WaveFormat.BlockAlign)
             {
-                fftBuffer[fftPos].X = (float)(BitConverter.ToSingle(e.Buffer, i) * FastFourierTransform.HammingWindow(fftPos, FFT_LENGTH));
+                fftBuffer[fftPos].X = (float)(BitConverter.ToSingle(e.Buffer, i) * FastFourierTransform.HannWindow(fftPos, FFT_LENGTH));
                 fftBuffer[fftPos].Y = 0;
                 fftPos++;
                 if (fftPos >= FFT_LENGTH)
@@ -55,19 +51,41 @@ namespace KeyboardControl
             }
         }
 
+        // TODO: Use bands: 25 38 59 91 140 215 331 510 784 1.2k 1.9k 2.9k 4.4k 6.8k 10.4k 16k
+        private static readonly double[] BUCKET_FREQS = {25, 38, 59, 91, 140, 215, 331, 510, 784, 1200, 1900, 2900, 4400, 6800, 10400, 16000};
+
+        private double DBWeighting(double freq)
+        {
+            // A weighting
+            var freq2 = freq * freq;
+            double upper = (12194 * 12194) * (freq2 * freq2);
+            double lower = (freq2 + 20.6 * 20.6) * Math.Sqrt((freq2 + 107.7 * 107.7) * (freq2 + 737.9 * 737.9)) * (freq2 + 12194 * 12194);
+            return Math.Log10(upper / lower) * 20 + 2.00;
+        }
+
         private void FFTDone()
         {
-            var currentBucketPowers = new double[bucketCount];
+            var currentBucketPowers = new double[BUCKET_FREQS.Length];
+
+            var currentBucket = 0;
             for (int band = 0; band < FFT_LENGTH_HALF; band++)
             {
-                //var freq = (waveIn.WaveFormat.SampleRate / FFT_LENGTH) * band;
-                var value = Math.Log10(fftBuffer[band + FFT_LENGTH_HALF].X) * 10;
-                
+                var freq = (waveIn.WaveFormat.SampleRate / FFT_LENGTH) * band;
+                if (freq > 10000)
+                {
+                    continue;
+                }
+
+                var complex = fftBuffer[band + FFT_LENGTH_HALF];
+                var magnitudeSqr = (complex.X * complex.X) + (complex.Y * complex.Y);
+                var value = Math.Log10(magnitudeSqr) * 10 - DBWeighting(freq);
+
                 // Map value onto 0 (-SOUND_FLLOR dB) - 1 (-SOUND_CEILING dB) range
                 if (double.IsNaN(value) || double.IsInfinity(value) || value < -SOUND_FLOOR)
                 {
                     value = -SOUND_FLOOR;
                 }
+
                 value += SOUND_FLOOR;
                 value /= SOUND_DYNAMIC_RANGE;
                 if (value > 1)
@@ -75,10 +93,15 @@ namespace KeyboardControl
                     value = 1;
                 }
 
-                var bucket = (band * bucketCount) / FFT_LENGTH_HALF;
-                if (value > currentBucketPowers[bucket])
+                //var bucket = (band * BUCKET_FREQS.Length) / FFT_LENGTH_HALF;
+                if (currentBucket < (BUCKET_FREQS.Length - 1) && Math.Abs(freq - BUCKET_FREQS[currentBucket]) > Math.Abs(freq - BUCKET_FREQS[currentBucket + 1]))
                 {
-                    currentBucketPowers[bucket] = value;
+                    currentBucket++;
+                }
+
+                if (value > currentBucketPowers[currentBucket])
+                {
+                    currentBucketPowers[currentBucket] = value;
                 }
             }
 
@@ -93,28 +116,29 @@ namespace KeyboardControl
 
         private async void SendToKeyboard()
         {
-            var averageBucketPowers = new double[bucketCount];
+            var averageBucketPowers = new double[BUCKET_FREQS.Length];
             foreach (var currentBucketPowers in bucketPowers)
             {
-                for (var i = 0; i < bucketCount; i++)
+                for (var i = 0; i < BUCKET_FREQS.Length; i++)
                 {
                     averageBucketPowers[i] += currentBucketPowers[i];
                 }
             }
 
-            var colors = new Keyboard.HSVColor[bucketCount];
-            for (int i = 0; i < bucketCount; i++)
+            var colors = new Keyboard.HSVColor[BUCKET_FREQS.Length];
+            for (int i = 0; i < BUCKET_FREQS.Length; i++)
             {
                 // 240 - 300
                 var ratio = averageBucketPowers[i] / MAX_BUCKET_WINDOW;
+                var l = BUCKET_FREQS.Length - (i + 1);
 
                 if (ratio > 0.5)
                 {
-                    colors[i] = new Keyboard.HSVColor(300.0 - (60.0 * Math.Sqrt((ratio - 0.5) * 2.0)), 1.0, 1.0);
+                    colors[l] = new Keyboard.HSVColor(300.0 - (60.0 * Math.Sqrt((ratio - 0.5) * 2.0)), 1.0, 1.0);
                 }
                 else
                 {
-                    colors[i] = new Keyboard.HSVColor(300.0, 1.0, ratio * 2.0);
+                    colors[l] = new Keyboard.HSVColor(300.0, 1.0, ratio * 2.0);
                 }
 
             }
