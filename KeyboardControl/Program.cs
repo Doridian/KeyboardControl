@@ -12,8 +12,6 @@ namespace KeyboardControl
             var keyboard = new Keyboard();
             await keyboard.Initialize();
 
-            Console.Clear();
-
             var audioHandler = new AudioHandler(new WasapiLoopbackCapture(), keyboard);
             audioHandler.Start();
 
