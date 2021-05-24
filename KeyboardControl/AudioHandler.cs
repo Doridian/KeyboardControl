@@ -1,5 +1,9 @@
-﻿using NAudio.Dsp;
-using NAudio.Wave;
+﻿using CSCore;
+using CSCore.Codecs.WAV;
+using CSCore.DSP;
+using CSCore.SoundIn;
+using CSCore.Streams;
+using KeyboardControl.Visualization;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -10,170 +14,174 @@ namespace KeyboardControl
 {
     public class AudioHandler
     {
-        private readonly IWaveIn waveIn;
+        public int ledCount = 16;
+
+        private readonly ISoundIn waveIn;
         private readonly Keyboard keyboard;
 
-        private static readonly int FFT_LENGTH = 512;
-        private static readonly int FFT_LENGTH_HALF = FFT_LENGTH / 2;
-        private static readonly int FFT_M = (int)Math.Log(FFT_LENGTH, 2);
+        public int numBars = 16;
 
-        private static readonly int MAX_BUCKET_WINDOW = 5;
+        public int minFreq = 5;
+        public int maxFreq = 4500;
+        public int barSpacing = 0;
+        public bool logScale = true;
+        public bool isAverage = false;
 
-        private static readonly double SOUND_FLOOR = 120;
-        private static readonly double SOUND_CEILING = 60;
-        private static readonly double SOUND_DYNAMIC_RANGE = SOUND_FLOOR - SOUND_CEILING;
+        public float highScaleAverage = 2.0f;
+        public float highScaleNotAverage = 3.0f;
 
-        private Complex[] fftBuffer = new Complex[FFT_LENGTH];
-        private int fftPos = 0;
+        LineSpectrum lineSpectrum;
 
-        private LinkedList<double[]> bucketPowers = new LinkedList<double[]>();
+        //WaveWriter writer;
+        FftSize fftSize;
+        float[] fftBuffer;
 
-        public AudioHandler(IWaveIn waveIn, Keyboard keyboard)
+        //SingleBlockNotificationStream notificationSource;
+
+        BasicSpectrumProvider spectrumProvider;
+
+        IWaveSource finalSource;
+
+        public AudioHandler(ISoundIn waveIn, Keyboard keyboard)
         {
             this.waveIn = waveIn;
             this.keyboard = keyboard;
-            waveIn.DataAvailable += WaveIn_DataAvailable;
+
+            waveIn.Initialize();
+
+            // Get our capture as a source
+            IWaveSource source = new SoundInSource(waveIn);
+
+            // From https://github.com/filoe/cscore/blob/master/Samples/WinformsVisualization/Form1.cs
+
+            // This is the typical size, you can change this for higher detail as needed
+            fftSize = FftSize.Fft4096;
+
+            // Actual fft data
+            fftBuffer = new float[(int)fftSize];
+
+            // These are the actual classes that give you spectrum data
+            // The specific vars of lineSpectrum here aren't that important because they can be changed by the user
+            spectrumProvider = new BasicSpectrumProvider(waveIn.WaveFormat.Channels,
+                        waveIn.WaveFormat.SampleRate, fftSize);
+
+            lineSpectrum = new LineSpectrum(fftSize)
+            {
+                SpectrumProvider = spectrumProvider,
+                UseAverage = true,
+                BarCount = numBars,
+                BarSpacing = 2,
+                IsXLogScale = false,
+                ScalingStrategy = ScalingStrategy.Linear
+            };
+
+            // Tells us when data is available to send to our spectrum
+            var notificationSource = new SingleBlockNotificationStream(source.ToSampleSource());
+
+            notificationSource.SingleBlockRead += NotificationSource_SingleBlockRead;
+
+            // We use this to request data so it actualy flows through (figuring this out took forever...)
+            finalSource = notificationSource.ToWaveSource();
+
+            waveIn.DataAvailable += Capture_DataAvailable;
         }
 
-        private void WaveIn_DataAvailable(object sender, WaveInEventArgs e)
+        private void Capture_DataAvailable(object sender, DataAvailableEventArgs e)
         {
-            for (int i = 0; i < e.BytesRecorded; i += waveIn.WaveFormat.BlockAlign)
+            finalSource.Read(e.Data, e.Offset, e.ByteCount);
+        }
+
+        private void NotificationSource_SingleBlockRead(object sender, SingleBlockReadEventArgs e)
+        {
+            spectrumProvider.Add(e.Left, e.Right);
+        }
+
+        public float[] barData = new float[20];
+
+        private float[] GetFFtData()
+        {
+            lock (barData)
             {
-                fftBuffer[fftPos].X = (float)(BitConverter.ToSingle(e.Buffer, i) * FastFourierTransform.HannWindow(fftPos, FFT_LENGTH));
-                fftBuffer[fftPos].Y = 0;
-                fftPos++;
-                if (fftPos >= FFT_LENGTH)
+                lineSpectrum.BarCount = numBars;
+                if (numBars != barData.Length)
                 {
-                    FastFourierTransform.FFT(true, FFT_M, fftBuffer);
-                    FFTDone();
-                    fftPos = 0;
+                    barData = new float[numBars];
                 }
+            }
+
+            if (spectrumProvider.IsNewDataAvailable)
+            {
+                lineSpectrum.MinimumFrequency = minFreq;
+                lineSpectrum.MaximumFrequency = maxFreq;
+                lineSpectrum.IsXLogScale = logScale;
+                lineSpectrum.BarSpacing = barSpacing;
+                lineSpectrum.SpectrumProvider.GetFftData(fftBuffer, this);
+                return lineSpectrum.GetSpectrumPoints(100.0f, fftBuffer);
+            }
+            else
+            {
+                return null;
             }
         }
 
-        // TODO: Use bands: 25 38 59 91 140 215 331 510 784 1.2k 1.9k 2.9k 4.4k 6.8k 10.4k 16k
-        private static readonly double[] BUCKET_FREQS = { 25, 38, 59, 91, 140, 215, 331, 510, 784, 1200, 1900, 2900, 4400, 6800, 10400, 16000 };
-        private static readonly int[] BUCKET_LEDS = { 0, 15, 1, 14, 2, 13, 3, 12, 4, 11, 5, 10, 6, 9, 8, 7 };
-
-        private double DBWeighting(double freq)
+        public void RefreshKeyboard()
         {
-            var freq2 = freq * freq;
-            // A weighting
-            double upper = (12194 * 12194) * (freq2 * freq2);
-            double lower = (freq2 + 20.6 * 20.6) * Math.Sqrt((freq2 + 107.7 * 107.7) * (freq2 + 737.9 * 737.9)) * (freq2 + 12194 * 12194);
-            return Math.Log10(upper / lower) * 20 + 2.00;
-            // C weighting
-            /*double upper = (12194 * 12194) * freq2;
-            double lower = (freq2 + 20.6 * 20.6) * (freq2 + 12194 * 12194);
-            return Math.Log10(upper / lower) * 20 + 0.06;*/
+            if (ComputeData())
+            {
+                SendToKeyboard();
+            }
         }
 
-        private void FFTDone()
+        private bool ComputeData()
         {
-            var bandWidth = waveIn.WaveFormat.SampleRate / FFT_LENGTH;
-            var currentBucketPowers = new double[BUCKET_FREQS.Length];
-            
-            /*
-            for (var i = 0; i < currentBucketPowers.Length; i++)
+            float[] resData = GetFFtData();
+
+            int numBars = barData.Length;
+
+            if (resData == null)
             {
-                currentBucketPowers[i] = -9999;
+                return false;
             }
 
-
-            int w = Console.WindowWidth - 2;
-            Console.SetCursorPosition(0, 0);
-            */
-
-            var currentBucket = 0;
-            for (int band = 0; band < FFT_LENGTH_HALF; band++)
+            lock (barData)
             {
-                var freq = bandWidth * (band + 0.5);
-                var complex = fftBuffer[band + FFT_LENGTH_HALF];
-                var magnitudeSqr = (complex.X * complex.X) + (complex.Y * complex.Y);
-                var value = Math.Log10(magnitudeSqr) * 10 - DBWeighting(freq);
-
-                // Map value onto 0 (-SOUND_FLLOR dB) - 1 (-SOUND_CEILING dB) range
-                if (double.IsNaN(value) || double.IsInfinity(value) || value < -SOUND_FLOOR)
+                for (int i = 0; i < numBars && i < resData.Length; i++)
                 {
-                    value = -SOUND_FLOOR;
+                    // Make the data between 0.0 and 1.0
+                    barData[i] = resData[i] / 100.0f;
                 }
 
-                value += SOUND_FLOOR;
-
-                value /= SOUND_DYNAMIC_RANGE;
-                if (value > 1)
+                for (int i = 0; i < numBars && i < resData.Length; i++)
                 {
-                    value = 1;
-                }
-                
-                if (currentBucket < (BUCKET_FREQS.Length - 1) && Math.Abs(freq - BUCKET_FREQS[currentBucket]) > Math.Abs(freq - BUCKET_FREQS[currentBucket + 1]))
-                {
-                    currentBucket++;
-                }
-
-                if (value > currentBucketPowers[currentBucket])
-                {
-                    currentBucketPowers[currentBucket] = value;
+                    if (lineSpectrum.UseAverage)
+                    {
+                        // Scale the data because for some reason bass is always loud and treble is soft
+                        barData[i] = barData[i] + highScaleAverage * (float)Math.Sqrt(i / (numBars + 0.0f)) * barData[i];
+                    }
+                    else
+                    {
+                        barData[i] = barData[i] + highScaleNotAverage * (float)Math.Sqrt(i / (numBars + 0.0f)) * barData[i];
+                    }
                 }
             }
 
-            /*
-            foreach (var bucket in currentBucketPowers)
-            {
-                var power = bucket.ToString(); //"".PadLeft((int)(w * bucket), '#');
-                Console.Out.WriteLine(power.PadRight(w, ' '));
-            }*/
-
-            bucketPowers.AddFirst(currentBucketPowers);
-            if (bucketPowers.Count > MAX_BUCKET_WINDOW)
-            {
-                bucketPowers.RemoveLast();
-            }
-
-            SendToKeyboard();
+            return true;
         }
 
         private async void SendToKeyboard()
         {
-            var averageBucketPowers = new double[BUCKET_FREQS.Length];
-            var p = 0;
-            var pmax = 0.0;
-            foreach (var currentBucketPowers in bucketPowers)
+            var colors = new Keyboard.HSVColor[ledCount];
+            for (int i = 0; i < ledCount; i++)
             {
-                var relPowerFactor = 1.0 - (p / MAX_BUCKET_WINDOW);
-                relPowerFactor *= relPowerFactor;
-
-                pmax += relPowerFactor;
-                for (var i = 0; i < BUCKET_FREQS.Length; i++)
-                {
-                    var relPower = currentBucketPowers[i] * relPowerFactor;
-                    /*if (averageBucketPowers[i] < relPower)
-                    {
-                        averageBucketPowers[i] = relPower;
-                    }*/
-                    averageBucketPowers[i] += relPower;
-                }
-                p++;
-            }
-
-            var colors = new Keyboard.HSVColor[BUCKET_FREQS.Length];
-            for (int i = 0; i < BUCKET_FREQS.Length; i++)
-            {
-                // 240 - 300
-                var ratio = averageBucketPowers[i] / pmax;
-                var l = BUCKET_LEDS[i];
-                if (l < 0)
-                {
-                    continue;
-                }
+                var ratio = barData[i];
 
                 if (ratio > 0.5)
                 {
-                    colors[l] = new Keyboard.HSVColor(300.0 - (60.0 * Math.Sqrt((ratio - 0.5) * 2.0)), 1.0, 1.0);
+                    colors[i] = new Keyboard.HSVColor(300.0 - (60.0 * Math.Sqrt((ratio - 0.5) * 2.0)), 1.0, 1.0);
                 }
                 else
                 {
-                    colors[l] = new Keyboard.HSVColor(300.0, 1.0, ratio * 2.0);
+                    colors[i] = new Keyboard.HSVColor(300.0, 1.0, ratio * 2.0);
                 }
             }
 
@@ -182,12 +190,12 @@ namespace KeyboardControl
 
         public void Start()
         {
-            waveIn.StartRecording();
+            waveIn.Start();
         }
 
         public void Stop()
         {
-            waveIn.StopRecording();
+            waveIn.Stop();
         }
     }
 }
