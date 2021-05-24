@@ -168,20 +168,23 @@ namespace KeyboardControl
             return true;
         }
 
+        private static readonly int[] BUCKET_LEDS = { 0, 15, 1, 14, 2, 13, 3, 12, 4, 11, 5, 10, 6, 9, 8, 7 };
+
         private async void SendToKeyboard()
         {
             var colors = new Keyboard.HSVColor[ledCount];
             for (int i = 0; i < ledCount; i++)
             {
                 var ratio = barData[i];
+                var l = BUCKET_LEDS[i];
 
                 if (ratio > 0.5)
                 {
-                    colors[i] = new Keyboard.HSVColor(300.0 - (60.0 * Math.Sqrt((ratio - 0.5) * 2.0)), 1.0, 1.0);
+                    colors[l] = new Keyboard.HSVColor(300.0 - (60.0 * Math.Sqrt((ratio - 0.5) * 2.0)), 1.0, 1.0);
                 }
                 else
                 {
-                    colors[i] = new Keyboard.HSVColor(300.0, 1.0, ratio * 2.0);
+                    colors[l] = new Keyboard.HSVColor(300.0, 1.0, ratio * 2.0);
                 }
             }
 
